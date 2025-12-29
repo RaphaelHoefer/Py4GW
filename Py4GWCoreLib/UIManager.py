@@ -672,8 +672,9 @@ class UIManager:
             try:
                 pid = PyUIManager.UIFrame(fid).parent_id
                 children_map[pid].append(fid)
-            except:
-                pass
+            except (AttributeError, ValueError, RuntimeError):
+                # Skip frames that can't be accessed or have invalid parent IDs
+                continue
 
         # BFS: pick the container with the most template_type==1 children
         queue = deque([root])
@@ -740,8 +741,9 @@ class UIManager:
             try:
                 pid = PyUIManager.UIFrame(fid).parent_id
                 children_map[pid].append(fid)
-            except:
-                pass
+            except (AttributeError, ValueError, RuntimeError):
+                # Skip frames that can't be accessed or have invalid parent IDs
+                continue
 
         descendants = []
         queue = deque([root])
@@ -872,14 +874,15 @@ class UIManager:
 
         # --- Preload the entire frame array + cache UIFrame objects once ---
         frame_ids_all = UIManager.GetFrameArray()
-        
+
         frame_cache : dict[int, PyUIManager.UIFrame] = {}
         for fid in frame_ids_all:
             try:
                 frame_cache[fid] = PyUIManager.UIFrame(fid)
-            except:
-                pass
-            
+            except (AttributeError, ValueError, RuntimeError):
+                # Skip frames that can't be created
+                continue
+
         root = UIManager.GetFrameIDByHash(NPC_DIALOG_HASH)
 
         # Build children map only once

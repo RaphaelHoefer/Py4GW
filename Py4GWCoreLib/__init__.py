@@ -1,3 +1,9 @@
+"""
+Py4GWCoreLib - Core library for Guild Wars automation.
+
+This module provides the main API for interacting with the Guild Wars client.
+"""
+
 import traceback
 import math
 from enum import Enum
@@ -7,6 +13,7 @@ import inspect
 import sys
 from dataclasses import dataclass, field
 
+# Native bindings
 import Py4GW
 import PyScanner
 import PyImGui
@@ -29,37 +36,77 @@ import PyUIManager
 import PyCamera
 import Py2DRenderer
 
-from .enums import *
-from .ImGui_src.IconsFontAwesome5 import IconsFontAwesome5
-from .Map import *
-from .ImGui import *
-from .model_data import *
-from .Agent import *
-from .Player import *
-from .AgentArray import *
-from .Party import *
-from .Item import *
-from .ItemArray import *
-from .Inventory import *
-from .Skill import *
-from .Skillbar import *
-from .Effect import *
-from .Merchant import *
-from .Quest import *
-from .Camera import *
-from .Scanner import *
+# Enums - explicit imports for commonly used enums
+from .enums import (
+    # Game data
+    Ailment, Allegiance, Attribute, DamageType, DyeColor,
+    FactionAllegiance, FactionType, Inscription, Profession,
+    ProfessionShort, Range, Reduced_Ailment, SkillType, Weapon,
+    WeaporReq, CAP_EXPERIENCE, CAP_STEP, EXPERIENCE_PROGRESSION,
+    # Heroes
+    HeroType, PetBehavior,
+    # IO
+    Key, MouseButton, CHAR_MAP,
+    # Items
+    Bags, IdentifyAllType, ItemType, Rarity, SalvageAllType,
+    # Maps
+    explorable_name_to_id, explorables, name_to_map_id,
+    outpost_name_to_id, outposts, InstanceType, InstanceTypeName,
+    # Models
+    AgentModelID, ModelID, PetModelID, SPIRIT_BUFF_MAP, SpiritModelID,
+    # Multiboxing
+    CombatPrepSkillsType, SharedCommandType,
+    # Console
+    Console,
+    # Regions
+    Campaign, CampaignName, Continent, ContinentName, District,
+    Language, RegionType, RegionTypeName, ServerLanguage,
+    ServerLanguageName, ServerRegionName, DistrictName,
+)
 
-from .Py4GWcorelib import *
-from .Overlay import *
-from .DXOverlay import *
-from .UIManager import *
-from .Routines import *
-from .SkillManager import *
+# Icons
+from .ImGui_src.IconsFontAwesome5 import IconsFontAwesome5
+
+# Core modules - explicit imports
+from .Map import Map
+from .ImGui import ImGui
+from .model_data import ModelData
+from .Agent import Agent, AgentName, ItemOwnerCache
+from .Player import Player
+from .AgentArray import AgentArray, RawAgentArray
+from .Party import Party
+from .Item import Item, Bag
+from .ItemArray import ItemArray
+from .Inventory import Inventory
+from .Skill import Skill
+from .Skillbar import SkillBar
+from .Effect import Effects
+from .Merchant import Trading
+from .Quest import Quest
+from .Camera import Camera
+from .Scanner import Scanner
+
+# Core utilities
+from .Py4GWcorelib import (
+    ConsoleLog, ThrottledTimer, Timer, ActionQueueManager,
+)
+from .Overlay import Overlay, OverlayUtils
+from .DXOverlay import DXOverlay
+from .UIManager import UIManager, FrameInfo, WindowFrames
+from .Routines import Routines
+from .SkillManager import SkillManager
 from .GlobalCache import GLOBAL_CACHE
 from .Pathing import AutoPathing
 from .BuildMgr import BuildMgr
 from .Botting import BottingClass as Botting
 from .Context import GWContext
+
+# New utilities
+from .exceptions import (
+    Py4GWError, AgentError, InvalidAgentError, PartyError,
+    InventoryError, ItemError, SkillError, MapError, UIError,
+    CacheError, ConfigError, ThreadingError, ValidationError,
+)
 
 traceback = traceback
 math = math

@@ -1,4 +1,5 @@
 
+import threading
 from Py4GWCoreLib import ThrottledTimer
 from Py4GWCoreLib.Py4GWcorelib import ActionQueueManager
 from Py4GWCoreLib import RawAgentArray
@@ -21,12 +22,18 @@ from .SharedMemory import Py4GWSharedMemoryManager
 from typing import Generator, List
 
 class GlobalCache:
+    """Thread-safe singleton for global game state cache."""
     _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
+        # Double-checked locking pattern for thread-safe singleton
         if cls._instance is None:
-            cls._instance = super(GlobalCache, cls).__new__(cls)
-            cls._instance._init_namespaces()
+            with cls._lock:
+                # Check again after acquiring lock
+                if cls._instance is None:
+                    cls._instance = super(GlobalCache, cls).__new__(cls)
+                    cls._instance._init_namespaces()
         return cls._instance
 
     def _init_namespaces(self):

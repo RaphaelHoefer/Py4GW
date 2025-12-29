@@ -6,6 +6,15 @@ import ctypes
 
 
 class MultiThreading:
+    """
+    Thread manager with graceful shutdown support.
+
+    Provides thread lifecycle management with:
+    - Stop events for graceful shutdown
+    - Watchdog for timeout detection
+    - Keepalive mechanism for health monitoring
+    """
+
     def __init__(self, timeout=1.0, log_actions=False):
         """Initialize thread manager."""
         self.threads = {}
@@ -22,14 +31,16 @@ class MultiThreading:
                 ConsoleLog("MultiThreading", f"Thread '{name}' already exists.", Console.MessageType.Warning)
                 return
 
-            # Prepare thread entry
+            # Prepare thread entry with stop event for graceful shutdown
             last_keepalive = time.time()
+            stop_event = threading.Event()
             self.threads[name] = {
                 "thread": None,
                 "target_fn": execute_fn,
                 "args": args,
                 "kwargs": kwargs,
-                "last_keepalive": last_keepalive
+                "last_keepalive": last_keepalive,
+                "stop_event": stop_event
             }
 
         # Start thread immediately
@@ -91,7 +102,14 @@ class MultiThreading:
                 self.threads[name]["last_keepalive"] = current_time
 
 
-    def stop_thread(self, name):
+    def stop_thread(self, name, graceful_timeout: float = 2.0):
+        """
+        Stop a thread, preferring graceful shutdown.
+
+        Args:
+            name: Name of the thread to stop
+            graceful_timeout: Seconds to wait for graceful shutdown before forcing
+        """
         with self.lock:
             if name not in self.threads:
                 if self.log_actions:
@@ -100,22 +118,84 @@ class MultiThreading:
 
             thread_info = self.threads[name]
             thread = thread_info.get("thread")
-            if thread and thread.is_alive():
-                if self.log_actions:
-                    ConsoleLog("MultiThreading", f"Force stopping thread '{name}'.", Console.MessageType.Warning)
-                ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread.ident), ctypes.py_object(SystemExit))
-                time.sleep(0.1)
+            stop_event = thread_info.get("stop_event")
 
-            del self.threads[name]
+        # Signal the thread to stop gracefully
+        if stop_event:
+            stop_event.set()
+
+        if thread and thread.is_alive():
+            if self.log_actions:
+                ConsoleLog("MultiThreading", f"Requesting graceful stop for thread '{name}'.", Console.MessageType.Info)
+
+            # Wait for graceful shutdown
+            thread.join(timeout=graceful_timeout)
+
+            # If still alive after timeout, force stop as last resort
+            if thread.is_alive():
+                if self.log_actions:
+                    ConsoleLog("MultiThreading", f"Force stopping thread '{name}' (graceful shutdown timed out).", Console.MessageType.Warning)
+                try:
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread.ident), ctypes.py_object(SystemExit))
+                    time.sleep(0.1)
+                except (ValueError, SystemError):
+                    # Thread may have already exited
+                    pass
+
+        with self.lock:
+            if name in self.threads:
+                del self.threads[name]
+
         if self.log_actions:
             ConsoleLog("MultiThreading", f"Thread '{name}' stopped and removed.", Console.MessageType.Info)
 
     def stop_all_threads(self):
+        """Stop all managed threads."""
         with self.lock:
             thread_names = list(self.threads.keys())
 
         for name in thread_names:
             self.stop_thread(name)
+
+    def should_stop(self, name: str) -> bool:
+        """
+        Check if a thread should stop.
+
+        Threads can call this periodically to check if they should exit gracefully.
+
+        Args:
+            name: Name of the thread
+
+        Returns:
+            True if the thread should stop, False otherwise
+        """
+        with self.lock:
+            if name not in self.threads:
+                return True
+            stop_event = self.threads[name].get("stop_event")
+            if stop_event:
+                return stop_event.is_set()
+        return False
+
+    def get_stop_event(self, name: str) -> threading.Event:
+        """
+        Get the stop event for a thread.
+
+        Threads can use this to wait on the stop event or check it directly.
+
+        Args:
+            name: Name of the thread
+
+        Returns:
+            The threading.Event for this thread, or a new set event if not found
+        """
+        with self.lock:
+            if name in self.threads:
+                return self.threads[name].get("stop_event", threading.Event())
+        # Return a set event if thread not found (signals should stop)
+        event = threading.Event()
+        event.set()
+        return event
 
 
 

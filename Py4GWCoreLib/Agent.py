@@ -1,28 +1,52 @@
+import threading
 import PyAgent
 
 from Py4GWCoreLib.py4gwcorelib_src.Utils import Utils
 
 from .model_data import ModelData
 
+# Thread-local storage for agent instance caching
+_agent_cache = threading.local()
+
+
+def _get_cached_agent(agent_id: int) -> PyAgent.PyAgent:
+    """
+    Get a cached PyAgent instance for the given agent_id.
+    Uses thread-local storage to avoid recreating instances on every call.
+    Cache is cleared when agent_id changes.
+    """
+    if not hasattr(_agent_cache, 'current_id') or _agent_cache.current_id != agent_id:
+        _agent_cache.current_id = agent_id
+        _agent_cache.instance = PyAgent.PyAgent(agent_id)
+    return _agent_cache.instance
+
+
 class ItemOwnerCache:
+    """Thread-safe cache for item ownership tracking."""
     _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ItemOwnerCache, cls).__new__(cls)
-            cls._instance._init()
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(ItemOwnerCache, cls).__new__(cls)
+                    cls._instance._init()
         return cls._instance
 
     def _init(self):
         self.cache = {}  # { item_id: original_owner_id }
+        self._cache_lock = threading.Lock()
 
     def check_and_cache(self, item_id, owner_id):
-        if item_id not in self.cache:
-            self.cache[item_id] = owner_id
-        return self.cache[item_id]
+        with self._cache_lock:
+            if item_id not in self.cache:
+                self.cache[item_id] = owner_id
+            return self.cache[item_id]
 
     def clear_all(self):
-        self.cache.clear()
+        with self._cache_lock:
+            self.cache.clear()
 
 
 # Agent
@@ -623,10 +647,8 @@ class Agent:
     @staticmethod
     def IsAggressive(agent_id):
         """Check if the agent is attacking or casting."""
-        if Agent.agent_instance(agent_id).living_agent.is_attacking or Agent.agent_instance(agent_id).living_agent.is_casting:
-            return True
-        else:
-            return False
+        instance = Agent.agent_instance(agent_id)
+        return instance.living_agent.is_attacking or instance.living_agent.is_casting
 
     @staticmethod
     def IsAttacking(agent_id):
@@ -652,7 +674,8 @@ class Agent:
     @staticmethod
     def GetWeaponType(agent_id):
         """Purpose: Retrieve the weapon type of the agent."""
-        return Agent.agent_instance(agent_id).living_agent.weapon_type.ToInt(), Agent.agent_instance(agent_id).living_agent.weapon_type.GetName()
+        weapon_type = Agent.agent_instance(agent_id).living_agent.weapon_type
+        return weapon_type.ToInt(), weapon_type.GetName()
 
     @staticmethod
     def GetWeaponExtraData(agent_id):
@@ -704,10 +727,11 @@ class Agent:
 
     @staticmethod
     def GetCastingSkill(agent_id):
-        """ Purpose: Retrieve the casting skill of the agent."""
-        if not Agent.agent_instance(agent_id).living_agent.is_casting:
-            return 0    
-        return Agent.agent_instance(agent_id).living_agent.casting_skill_id
+        """Purpose: Retrieve the casting skill of the agent."""
+        living_agent = Agent.agent_instance(agent_id).living_agent
+        if not living_agent.is_casting:
+            return 0
+        return living_agent.casting_skill_id
 
     @staticmethod
     def GetDaggerStatus(agent_id):
@@ -717,7 +741,8 @@ class Agent:
     @staticmethod
     def GetAllegiance(agent_id):
         """Purpose: Retrieve the allegiance of the agent."""
-        return  Agent.agent_instance(agent_id).living_agent.allegiance.ToInt(), Agent.agent_instance(agent_id).living_agent.allegiance.GetName()
+        allegiance = Agent.agent_instance(agent_id).living_agent.allegiance
+        return allegiance.ToInt(), allegiance.GetName()
 
     @staticmethod
     def IsPlayer(agent_id):
