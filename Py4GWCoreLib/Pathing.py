@@ -613,8 +613,22 @@ class AutoPathing:
                  chaikin_iterations: int = 1):
         from . import Routines
         
-        def _prepend_start(path2d: list[tuple[float, float]], sx: float, sy: float, tol: float = 250.0):
+        def _prepend_start(path2d: list[tuple[float, float]], sx: float, sy: float, tol: float = 250.0,
+                           max_merge: int = 4):
             if not path2d:
+                path2d.insert(0, (sx, sy))
+                return path2d
+
+            merge_count = 0
+            while path2d and merge_count < max_merge:
+                dx = path2d[0][0] - sx
+                dy = path2d[0][1] - sy
+                if dx * dx + dy * dy > tol * tol:
+                    break
+                path2d.pop(0)
+                merge_count += 1
+
+            if merge_count > 0:
                 path2d.insert(0, (sx, sy))
                 return path2d
 
@@ -717,5 +731,4 @@ class AutoPathing:
                                         smooth_by_chaikin=smooth_by_chaikin,
                                         chaikin_iterations=chaikin_iterations)
         return [(x, y) for (x, y, _) in path]
-
 
