@@ -1,8 +1,10 @@
 """
 Quest Auto-Runner (Simple)
 Author: raffaeloguido
-Description: Minimal quest runner that reads the active quest, converts its marker,
+Description: Automated quest runner that can accept quests, navigate to markers,
+and turn in completed quests. Reads the active quest, converts its marker,
 computes a navmesh path, and walks to the marker while pausing for combat/looting.
+Supports automatic quest acceptance and turn-in via NPC dialog interactions.
 Start the bot on the correct quest map/outpost.
 """
 
@@ -13,6 +15,8 @@ from Py4GWCoreLib import Botting, Quest, Map, ConsoleLog, Console, Routines, Ini
 from Py4GWCoreLib import GLOBAL_CACHE
 from Py4GWCoreLib.Pathing import AutoPathing
 from Py4GWCoreLib.Agent import Agent
+from Py4GWCoreLib.Player import Player
+from Py4GWCoreLib.UIManager import UIManager
 from Py4GWCoreLib.enums import SharedCommandType
 import PyImGui
 
@@ -28,6 +32,80 @@ def LootingRoutineActive() -> bool:
     if message.Command != SharedCommandType.PickUpLoot:
         return False
     return True
+
+def IsDialogOpen() -> bool:
+    """Check if NPC dialog window is currently open."""
+    try:
+        return UIManager.IsNPCDialogVisible()
+    except:
+        return False
+
+def GetNPCAtPosition(x: float, y: float, search_range: float = 500.0) -> int:
+    """Find the nearest NPC within range of target position.
+
+    Args:
+        x: Target X coordinate
+        y: Target Y coordinate
+        search_range: Maximum search distance (default: 500 units)
+
+    Returns:
+        Agent ID of nearest NPC, or 0 if none found
+    """
+    try:
+        # Use Agent.GetXY which is available in Agent class
+        player_id = GLOBAL_CACHE.Player.GetAgentID()
+        player_pos_x, player_pos_y = Agent.GetXY(player_id)
+        if player_pos_x == 0.0 and player_pos_y == 0.0:
+            return 0
+
+        # Get all NPCs from AgentArray
+        from Py4GWCoreLib.AgentArray import AgentArray
+        all_npcs = AgentArray.GetNPCMinipetArray()
+        nearest_npc = 0
+        nearest_distance = search_range
+
+        for npc_id in all_npcs:
+            if npc_id == 0:
+                continue
+
+            npc_pos_x, npc_pos_y = Agent.GetXY(npc_id)
+            if npc_pos_x == 0.0 and npc_pos_y == 0.0:
+                continue
+
+            # Calculate distance from NPC to target position
+            dx = npc_pos_x - x
+            dy = npc_pos_y - y
+            distance = (dx * dx + dy * dy) ** 0.5
+
+            if distance < nearest_distance:
+                nearest_distance = distance
+                nearest_npc = npc_id
+
+        return nearest_npc
+    except Exception as e:
+        DebugLog(BOT_NAME, f"Error in GetNPCAtPosition: {e}", Console.MessageType.Warning)
+        return 0
+
+def InteractWithNPC(npc_id: int) -> bool:
+    """Interact with an NPC by changing target and interacting.
+
+    Args:
+        npc_id: The agent ID of the NPC
+
+    Returns:
+        True if interaction succeeded, False otherwise
+    """
+    try:
+        if npc_id == 0:
+            return False
+
+        # Change target to NPC and interact
+        GLOBAL_CACHE.Player.ChangeTarget(npc_id)
+        GLOBAL_CACHE.Player.Interact(npc_id, call_target=True)
+        return True
+    except Exception as e:
+        DebugLog(BOT_NAME, f"Error interacting with NPC: {e}", Console.MessageType.Warning)
+        return False
 
 BOT_NAME = "Quest Auto-Runner (Simple)"
 MARKER_UPDATE_TIMEOUT_S = 20.0
@@ -47,11 +125,17 @@ class Config:
     def __init__(self):
         """Read configuration values from INI file"""
         self.debug_logging = ini_handler.read_bool(BOT_NAME, "debug_logging", False)
+        self.auto_accept_quests = ini_handler.read_bool(BOT_NAME, "auto_accept_quests", True)
+        self.auto_turn_in_quests = ini_handler.read_bool(BOT_NAME, "auto_turn_in_quests", True)
+        self.dialog_timeout_seconds = ini_handler.read_int(BOT_NAME, "dialog_timeout_seconds", 5)
 
     def save(self):
         """Save the current configuration to the INI file."""
         if sync_timer.HasElapsed(sync_interval):
             ini_handler.write_key(BOT_NAME, "debug_logging", str(self.debug_logging))
+            ini_handler.write_key(BOT_NAME, "auto_accept_quests", str(self.auto_accept_quests))
+            ini_handler.write_key(BOT_NAME, "auto_turn_in_quests", str(self.auto_turn_in_quests))
+            ini_handler.write_key(BOT_NAME, "dialog_timeout_seconds", str(self.dialog_timeout_seconds))
             sync_timer.Start()
 
 bot_config = Config()
@@ -152,6 +236,88 @@ def bot_routine(bot: Botting) -> None:
     """Main bot routine using Botting framework."""
 
     DebugLog(BOT_NAME, "=== Bot routine starting ===", Console.MessageType.Info)
+
+    # Step 0: Check for quest acceptance (if enabled and no active quest)
+    if bot_config.auto_accept_quests:
+        bot.States.AddHeader("Quest Acceptance")
+
+        def try_accept_quest():
+            """Try to accept a quest from nearby NPC if no quest is active."""
+            try:
+                active_quest_id = Quest.GetActiveQuest()
+
+                # If we already have an active quest, skip acceptance
+                if active_quest_id != 0:
+                    DebugLog(BOT_NAME, f"Quest {active_quest_id} already active, skipping acceptance", Console.MessageType.Info)
+                    yield
+                    return
+
+                DebugLog(BOT_NAME, "No active quest detected. Attempting to accept quest from nearby NPC...", Console.MessageType.Info)
+
+                # Look for nearby NPCs
+                player_id = GLOBAL_CACHE.Player.GetAgentID()
+                player_pos_x, player_pos_y = Agent.GetXY(player_id)
+                if player_pos_x == 0.0 and player_pos_y == 0.0:
+                    DebugLog(BOT_NAME, "Cannot get player position, skipping quest acceptance", Console.MessageType.Warning)
+                    yield
+                    return
+
+                # Search for NPC near player
+                npc_id = GetNPCAtPosition(player_pos_x, player_pos_y, search_range=1000.0)
+                if npc_id == 0:
+                    DebugLog(BOT_NAME, "No NPC found nearby, skipping quest acceptance", Console.MessageType.Warning)
+                    yield
+                    return
+
+                DebugLog(BOT_NAME, f"Found NPC {npc_id}, attempting interaction...", Console.MessageType.Info)
+
+                # Interact with NPC
+                if not InteractWithNPC(npc_id):
+                    DebugLog(BOT_NAME, "Failed to interact with NPC", Console.MessageType.Warning)
+                    yield
+                    return
+
+                # Wait for dialog to open
+                timeout_ms = bot_config.dialog_timeout_seconds * 1000
+                start_time = time.time()
+                dialog_opened = False
+
+                while (time.time() - start_time) * 1000 < timeout_ms:
+                    if IsDialogOpen():
+                        dialog_opened = True
+                        break
+                    yield from Routines.Yield.wait(200)
+
+                if not dialog_opened:
+                    DebugLog(BOT_NAME, "Dialog did not open in time", Console.MessageType.Warning)
+                    yield
+                    return
+
+                DebugLog(BOT_NAME, "Dialog opened, attempting to accept quest...", Console.MessageType.Info)
+
+                # Try common quest acceptance dialogs
+                # 0x84 is a common "accept" dialog option
+                # Different quests may use different dialog IDs
+                try:
+                    Player.SendDialog(0x84)
+                    yield from Routines.Yield.wait(1000)
+
+                    # Check if quest was accepted
+                    active_quest_id = Quest.GetActiveQuest()
+                    if active_quest_id != 0:
+                        DebugLog(BOT_NAME, f"Successfully accepted quest {active_quest_id}", Console.MessageType.Success)
+                    else:
+                        DebugLog(BOT_NAME, "Quest acceptance may have failed - no active quest detected", Console.MessageType.Warning)
+
+                except Exception as e:
+                    DebugLog(BOT_NAME, f"Error sending quest acceptance dialog: {e}", Console.MessageType.Error)
+
+            except Exception as e:
+                DebugLog(BOT_NAME, f"Error in quest acceptance: {e}", Console.MessageType.Error)
+
+            yield
+
+        bot.States.AddCustomState(try_accept_quest, "Try Accept Quest")
 
     # Step 1: Load quest data and get coordinates
     bot.States.AddHeader("Load Quest Data")
@@ -353,12 +519,174 @@ def bot_routine(bot: Botting) -> None:
     # Add wait for combat after movement
     bot.Wait.UntilOutOfCombat()
 
-    # Step 4: Completion
+    # Step 4: Quest Progression/Turn-In at Marker
+    if bot_config.auto_turn_in_quests:
+        bot.States.AddHeader("Quest Turn-In")
+
+        def try_turn_in_quest():
+            """Try to progress or turn in the quest at the marker."""
+            try:
+                # Get active quest
+                active_quest_id = Quest.GetActiveQuest()
+                if active_quest_id == 0:
+                    DebugLog(BOT_NAME, "No active quest", Console.MessageType.Warning)
+                    yield
+                    return
+
+                quest_data = Quest.GetQuestData(active_quest_id)
+
+                # Check if quest is completed or just at a progression marker
+                if quest_data.is_completed:
+                    DebugLog(BOT_NAME, f"Quest {active_quest_id} is completed! Attempting to turn in...", Console.MessageType.Success)
+                else:
+                    DebugLog(BOT_NAME, f"Quest {active_quest_id} at marker but not completed. Attempting to progress quest...", Console.MessageType.Info)
+
+                # Get quest marker position to find NPC
+                coords = ConvertQuestMarkerCoordinates(quest_data)
+                if coords is None:
+                    DebugLog(BOT_NAME, "No valid quest marker for turn-in", Console.MessageType.Warning)
+                    yield
+                    return
+
+                marker_x, marker_y = coords
+
+                # Look for NPC at quest marker (search closer range for more accuracy)
+                npc_id = GetNPCAtPosition(marker_x, marker_y, search_range=500.0)
+                if npc_id == 0:
+                    # Try wider search if nothing found close by
+                    DebugLog(BOT_NAME, "No NPC found close to marker, searching wider area...", Console.MessageType.Info)
+                    npc_id = GetNPCAtPosition(marker_x, marker_y, search_range=1500.0)
+
+                if npc_id == 0:
+                    DebugLog(BOT_NAME, "No NPC found at quest marker for turn-in", Console.MessageType.Warning)
+                    DebugLog(BOT_NAME, "The quest may require manual turn-in or the marker might not be at the NPC", Console.MessageType.Info)
+                    yield
+                    return
+
+                DebugLog(BOT_NAME, f"Found NPC {npc_id} at quest marker, attempting interaction...", Console.MessageType.Info)
+
+                # Interact with NPC
+                if not InteractWithNPC(npc_id):
+                    DebugLog(BOT_NAME, "Failed to interact with quest NPC", Console.MessageType.Warning)
+                    yield
+                    return
+
+                # Wait for dialog to open
+                timeout_ms = bot_config.dialog_timeout_seconds * 1000
+                start_time = time.time()
+                dialog_opened = False
+
+                while (time.time() - start_time) * 1000 < timeout_ms:
+                    if IsDialogOpen():
+                        dialog_opened = True
+                        break
+                    yield from Routines.Yield.wait(200)
+
+                if not dialog_opened:
+                    DebugLog(BOT_NAME, "Dialog did not open for quest turn-in", Console.MessageType.Warning)
+                    yield
+                    return
+
+                if quest_data.is_completed:
+                    DebugLog(BOT_NAME, "Dialog opened, attempting to turn in quest...", Console.MessageType.Info)
+                else:
+                    DebugLog(BOT_NAME, "Dialog opened, attempting to progress quest...", Console.MessageType.Info)
+
+                quest_progressed = False
+                initial_marker = (marker_x, marker_y)
+
+                try:
+                    # First, try to get dialog buttons and click the first one
+                    try:
+                        dialog_buttons = UIManager.GetDialogButtonIDs(debug=bot_config.debug_logging)
+                        if dialog_buttons and len(dialog_buttons) > 0:
+                            # Click the first dialog button (usually the accept/continue/reward button)
+                            first_button = dialog_buttons[0]
+                            DebugLog(BOT_NAME, f"Clicking first dialog button ID: {first_button}", Console.MessageType.Info)
+                            UIManager.FrameClick(first_button)
+                            yield from Routines.Yield.wait(2000)
+
+                            # Check if quest progressed (marker changed, quest completed, or quest changed)
+                            new_quest_id = Quest.GetActiveQuest()
+                            if new_quest_id != active_quest_id:
+                                DebugLog(BOT_NAME, "Quest successfully turned in by clicking dialog button!", Console.MessageType.Success)
+                                quest_progressed = True
+                            else:
+                                # Check if marker changed (quest progressed to next step)
+                                new_quest_data = Quest.GetQuestData(active_quest_id)
+                                new_coords = ConvertQuestMarkerCoordinates(new_quest_data)
+                                if new_coords and new_coords != initial_marker:
+                                    DebugLog(BOT_NAME, "Quest marker updated - quest progressed to next step!", Console.MessageType.Success)
+                                    quest_progressed = True
+                                elif new_quest_data.is_completed and not quest_data.is_completed:
+                                    DebugLog(BOT_NAME, "Quest completed by dialog interaction!", Console.MessageType.Success)
+                                    quest_progressed = True
+                        else:
+                            DebugLog(BOT_NAME, "No dialog buttons found, trying dialog IDs...", Console.MessageType.Warning)
+                    except Exception as e:
+                        DebugLog(BOT_NAME, f"Error clicking dialog button: {e}, trying dialog IDs...", Console.MessageType.Warning)
+
+                    # If button clicking didn't work, try common dialog IDs
+                    if not quest_progressed:
+                        dialog_ids_to_try = [
+                            0x84,      # Generic accept/continue
+                            0x85,      # Alternative accept
+                            0x800000 | (active_quest_id << 8) | 0x04,  # Quest-specific update (QUESTID<<8 | 0x04)
+                            0x800000 | (active_quest_id << 8) | 0x07,  # Quest-specific reward (QUESTID<<8 | 0x07)
+                        ]
+
+                        for dialog_id in dialog_ids_to_try:
+                            DebugLog(BOT_NAME, f"Trying dialog ID: 0x{dialog_id:X}", Console.MessageType.Info)
+                            Player.SendDialog(dialog_id)
+                            yield from Routines.Yield.wait(2000)
+
+                            # Check if quest progressed
+                            new_quest_id = Quest.GetActiveQuest()
+                            if new_quest_id != active_quest_id:
+                                DebugLog(BOT_NAME, f"Quest turned in with dialog ID 0x{dialog_id:X}!", Console.MessageType.Success)
+                                quest_progressed = True
+                                break
+
+                            # Check if marker changed or quest completed
+                            new_quest_data = Quest.GetQuestData(active_quest_id)
+                            new_coords = ConvertQuestMarkerCoordinates(new_quest_data)
+                            if new_coords and new_coords != initial_marker:
+                                DebugLog(BOT_NAME, f"Quest progressed to next step with dialog ID 0x{dialog_id:X}!", Console.MessageType.Success)
+                                quest_progressed = True
+                                break
+                            elif new_quest_data.is_completed and not quest_data.is_completed:
+                                DebugLog(BOT_NAME, f"Quest completed with dialog ID 0x{dialog_id:X}!", Console.MessageType.Success)
+                                quest_progressed = True
+                                break
+
+                            # Check if dialog is still open for next attempt
+                            if not IsDialogOpen():
+                                DebugLog(BOT_NAME, "Dialog closed, may need to re-interact with NPC", Console.MessageType.Warning)
+                                break
+
+                    if not quest_progressed:
+                        DebugLog(BOT_NAME, "Quest may not have progressed - try manual interaction or check quest requirements", Console.MessageType.Warning)
+                        DebugLog(BOT_NAME, f"Quest ID: {active_quest_id} (0x{active_quest_id:X}) - progression dialog may be 0x{(active_quest_id << 8) | 0x04:X}, reward dialog 0x{(active_quest_id << 8) | 0x07:X}", Console.MessageType.Info)
+
+                except Exception as e:
+                    DebugLog(BOT_NAME, f"Error sending quest turn-in dialog: {e}", Console.MessageType.Error)
+
+            except Exception as e:
+                DebugLog(BOT_NAME, f"Error in quest turn-in: {e}", Console.MessageType.Error)
+
+            yield
+
+        bot.States.AddCustomState(try_turn_in_quest, "Try Turn In Quest")
+
+    # Step 5: Completion
     bot.States.AddHeader("Quest Marker Reached")
 
     def completion():
         DebugLog(BOT_NAME, "=== Arrived at quest marker! ===", Console.MessageType.Success)
-        DebugLog(BOT_NAME, "Handle quest objectives manually or restart for next quest.", Console.MessageType.Info)
+        if bot_config.auto_turn_in_quests:
+            DebugLog(BOT_NAME, "Quest turn-in attempted. Check quest log status.", Console.MessageType.Info)
+        else:
+            DebugLog(BOT_NAME, "Handle quest objectives manually or restart for next quest.", Console.MessageType.Info)
         yield
 
     bot.States.AddCustomState(completion, "Completion")
@@ -504,8 +832,36 @@ def configure():
             PyImGui.set_tooltip("Enable/disable console log messages from this bot")
 
         PyImGui.dummy(0, 5)
+
+        # Auto accept quests toggle
+        PyImGui.text("Auto Accept Quests:")
+        bot_config.auto_accept_quests = PyImGui.checkbox("##auto_accept_quests", bot_config.auto_accept_quests)
+        if PyImGui.is_item_hovered():
+            PyImGui.set_tooltip("Automatically accept quests from nearby NPCs when no quest is active")
+
+        PyImGui.dummy(0, 5)
+
+        # Auto turn in quests toggle
+        PyImGui.text("Auto Turn In Quests:")
+        bot_config.auto_turn_in_quests = PyImGui.checkbox("##auto_turn_in_quests", bot_config.auto_turn_in_quests)
+        if PyImGui.is_item_hovered():
+            PyImGui.set_tooltip("Automatically turn in completed quests at quest marker NPCs")
+
+        PyImGui.dummy(0, 5)
+
+        # Dialog timeout setting
+        PyImGui.text("Dialog Timeout (seconds):")
+        slider_result = PyImGui.slider_int("##dialog_timeout", bot_config.dialog_timeout_seconds, 1, 10)
+        if isinstance(slider_result, tuple):
+            changed, new_timeout = slider_result
+            if changed:
+                bot_config.dialog_timeout_seconds = new_timeout
+        if PyImGui.is_item_hovered():
+            PyImGui.set_tooltip("How long to wait for NPC dialogs to open (1-10 seconds)")
+
+        PyImGui.dummy(0, 5)
         PyImGui.separator()
-        PyImGui.text_wrapped("When enabled, the bot will print status messages to the console.")
+        PyImGui.text_wrapped("Quest Automation: The bot can automatically accept and turn in quests using dialog ID 0x84 (common for most quests). Some quests may require manual dialog interaction.")
 
         bot_config.save()
         end_pos = PyImGui.get_window_pos()
